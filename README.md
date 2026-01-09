@@ -1,7 +1,7 @@
 # Simplex Deep LDA
 
 This folder contains a lightweight PyTorch implementation of the Simplex Deep Linear Discriminant
-Analysis (Deep LDA) classifier described in https://arxiv.org/abs/2601.01679.
+Analysis (Deep LDA) classifier described in our paper.
 
 The paper shows that unconstrained maximum-likelihood training of Deep LDA can collapse class
 clusters and hurt discrimination. It proposes a constrained LDA head that fixes class means to the
@@ -58,16 +58,3 @@ loss.backward()
 For Fisher-style training, use `FisherSimplexLDAHead` and call `forward(z, y)` to obtain the
 negative Fisher ratio; use `logits(z)` at evaluation time.
 
-## Reference
-
-If you use this code, please cite the paper at https://arxiv.org/abs/2601.01679:
-
-```
-@misc{tezekbayev2026simplex,
-      title={Simplex Deep Linear Discriminant Analysis}, 
-      author={Maxat Tezekbayev and Arman Bolatov and Zhenisbek Assylbekov},
-      year={2026},
-      eprint={2601.01679},
-      url={https://arxiv.org/abs/2601.01679}, 
-}
-```
