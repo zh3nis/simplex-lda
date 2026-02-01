@@ -299,3 +299,65 @@ class FisherSimplexLDAHead(nn.Module):
 
         fisher_ratio = between / (within + self.fisher_eps)
         return -fisher_ratio
+
+def dnll_loss(
+    input: torch.Tensor,
+    target: torch.Tensor,
+    lambda_reg: float = 1.0,
+    reduction: str = "mean",
+) -> torch.Tensor:
+    r"""
+    DNLL: Discriminative Negative Log-Likelihood
+
+        L(x, y) = -input_y(x) + λ * sum_c exp(input_c(x))
+
+    Applicable to any generative classifier with class-wise
+    (unnormalized) log-density or log-joint scores.
+
+    Args:
+        input:  Tensor (N, C) of class scores δ_c(x).
+        target: LongTensor (N,) with class indices in [0, C-1].
+        lambda_reg: float ≥ 0, strength of discriminative penalty.
+        reduction: "none" | "mean" | "sum".
+
+    Returns:
+        Loss reduced according to `reduction`.
+    """
+    # NLL part: -δ_y(x)
+    nll = -input.gather(1, target.unsqueeze(1)).squeeze(1)  # (N,)
+
+    # Discriminative penalty: λ * ∑_c exp(δ_c(x))
+    reg = lambda_reg * input.exp().sum(dim=1)               # (N,)
+
+    loss = nll + reg                                        # (N,)
+
+    if reduction == "mean":
+        return loss.mean()
+    elif reduction == "sum":
+        return loss.sum()
+    elif reduction == "none":
+        return loss
+    else:
+        raise ValueError(f"Invalid reduction: {reduction}")
+
+class DNLLLoss(nn.Module):
+    r"""
+    DNLL: Discriminative Negative Log-Likelihood
+
+        L(x, y) = -input_y(x) + λ * sum_c exp(input_c(x))
+
+    A drop-in loss module similar to nn.CrossEntropyLoss, but designed
+    for generative classifiers whose outputs are log-density scores.
+    """
+    def __init__(self, lambda_reg: float = 1.0, reduction: str = "mean"):
+        super().__init__()
+        self.lambda_reg = float(lambda_reg)
+        self.reduction = reduction
+
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        return dnll_loss(
+            input=input,
+            target=target,
+            lambda_reg=self.lambda_reg,
+            reduction=self.reduction,
+        )
