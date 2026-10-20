@@ -159,7 +159,7 @@ def main():
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    covariance_types = ["spherical", "diag", "full"]
+    covariance_types = ["identity", "spherical", "diag", "full"]
     datasets_cfg = [
         {"name": "FashionMNIST", "C": 10, "D": 9, "optimize_head": False},
         {"name": "CIFAR10", "C": 10, "D": 9, "optimize_head": True},
