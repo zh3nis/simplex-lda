@@ -4,7 +4,11 @@ import torch.nn as nn
 
 
 class SimplexLDAHead(nn.Module):
-    """Fixed-mean LDA classifier with configurable covariance and trainable priors."""
+    """Fixed-mean LDA classifier with configurable covariance and trainable priors.
+
+    covariance_type="identity" fixes Sigma to I with no covariance parameters.
+    The spherical, diag, and full options use trainable covariance parameters.
+    """
 
     def __init__(self, C, D, covariance_type="spherical", min_scale=1e-4):
         super().__init__()
@@ -13,9 +17,9 @@ class SimplexLDAHead(nn.Module):
         self.C = C
         self.D = D
         cov_type = str(covariance_type).lower()
-        if cov_type not in {"spherical", "diag", "full"}:
+        if cov_type not in {"identity", "spherical", "diag", "full"}:
             raise ValueError(
-                "covariance_type must be one of {'spherical', 'diag', 'full'} "
+                "covariance_type must be one of {'identity', 'spherical', 'diag', 'full'} "
                 f"(got {covariance_type!r})."
             )
         self.covariance_type = cov_type
@@ -30,7 +34,7 @@ class SimplexLDAHead(nn.Module):
             self.log_cov = nn.Parameter(torch.zeros(1, dtype=dtype))
         elif self.covariance_type == "diag":
             self.log_cov_diag = nn.Parameter(torch.zeros(D, dtype=dtype))
-        else:
+        elif self.covariance_type == "full":
             self.raw_tril = nn.Parameter(torch.zeros(D, D, dtype=dtype))
         self.prior_logits = nn.Parameter(torch.zeros(C, dtype=dtype))
 
@@ -50,6 +54,8 @@ class SimplexLDAHead(nn.Module):
 
     @property
     def cov_diag(self):
+        if self.covariance_type == "identity":
+            return self.mu.new_ones(self.D)
         if self.covariance_type == "spherical":
             return torch.exp(self.log_cov).repeat(self.D)
         if self.covariance_type == "diag":
@@ -58,9 +64,11 @@ class SimplexLDAHead(nn.Module):
 
     @property
     def covariance(self):
-        """Full covariance matrix Sigma = L L^T."""
+        """Return fixed identity covariance or learned full covariance Sigma = L L^T."""
+        if self.covariance_type == "identity":
+            return torch.eye(self.D, dtype=self.mu.dtype, device=self.mu.device)
         if self.covariance_type != "full":
-            raise AttributeError("covariance is only defined for full covariance.")
+            raise AttributeError("covariance is only defined for identity or full covariance.")
         L = self._get_cholesky(self.raw_tril.dtype, self.raw_tril.device)
         return L @ L.transpose(-2, -1)
 
@@ -89,6 +97,11 @@ class SimplexLDAHead(nn.Module):
 
         mu = self.mu.to(z.dtype)
         diff = z.unsqueeze(1) - mu.unsqueeze(0)
+        if self.covariance_type == "identity":
+            # Sigma^{-1} = I and log det(Sigma) = 0.
+            m2 = (diff * diff).sum(-1)
+            log_prior = torch.log_softmax(self.prior_logits, dim=0)
+            return log_prior.unsqueeze(0) - 0.5 * m2
         if self.covariance_type == "spherical":
             m2 = (diff * diff).sum(-1)
             log_cov = self.log_cov.to(z.dtype)
@@ -361,3 +374,73 @@ class DNLLLoss(nn.Module):
             lambda_reg=self.lambda_reg,
             reduction=self.reduction,
         )
+
+
+def class_covariance_penalty(
+    embeddings: torch.Tensor, target: torch.Tensor, num_classes=None
+) -> torch.Tensor:
+    """Return sum_c (n_c / N) ||sample_cov(z_c) - I||_F^2.
+
+    Covariances are centered on each class's empirical embedding mean and use
+    denominator n_c - 1. Classes with fewer than two examples contribute zero;
+    remaining batch-frequency weights are not renormalized. Targets are zero-based
+    class indices. Gradients propagate through the class means and covariances.
+
+    Supply num_classes to avoid discovering present classes with torch.unique.
+    CovNLLLoss supplies it from the score matrix shape. All covariances are computed
+    with one batched matrix multiplication, using O(C * N * D) temporary storage.
+    """
+    if embeddings.ndim != 2 or embeddings.size(0) == 0:
+        raise ValueError("embeddings must have nonempty shape (N, D).")
+    if target.ndim != 1 or target.size(0) != embeddings.size(0):
+        raise ValueError("target must have shape (N,) matching embeddings.")
+    if num_classes is None:
+        classes, target = torch.unique(target, return_inverse=True)
+        num_classes = classes.numel()
+
+    # Membership has shape (C, N). The training path needs no dynamic indexing
+    # or Python loop over classes, avoiding repeated small GPU kernel launches.
+    membership = nn.functional.one_hot(target, num_classes=num_classes).T.to(embeddings.dtype)
+    counts = membership.sum(dim=1)
+    means = (membership @ embeddings) / counts.clamp_min(1).unsqueeze(1)
+    centered = (embeddings.unsqueeze(0) - means.unsqueeze(1)) * membership.unsqueeze(2)
+    covariance = torch.bmm(centered.transpose(1, 2), centered)
+    covariance = covariance / (counts - 1).clamp_min(1).view(-1, 1, 1)
+
+    identity = torch.eye(
+        embeddings.size(1), dtype=embeddings.dtype, device=embeddings.device
+    )
+    squared_errors = (covariance - identity).square().sum(dim=(1, 2))
+    weights = (counts / embeddings.size(0)) * (counts >= 2).to(embeddings.dtype)
+    return (weights * squared_errors).sum()
+
+
+class CovNLLLoss(nn.Module):
+    """Mean NLL plus a class-wise penalty toward identity embedding covariance.
+
+    input: (N, C) log probabilities or unnormalized generative log scores.
+    target: (N,) zero-based class labels.
+    embeddings: (N, D) embeddings from the same examples, on the same device.
+
+    Like nn.NLLLoss, the NLL term is -mean(input[n, target[n]]); no log_softmax
+    is applied. This preserves generative-score training in the LDA notebooks.
+    Only mean reduction is used, keeping the scale of the covariance weight
+    independent of batch size. Matching covariance does not ensure Gaussianity.
+    """
+
+    def __init__(self, covariance_weight: float = 1.0):
+        super().__init__()
+        self.covariance_weight = float(covariance_weight)
+        if not math.isfinite(self.covariance_weight) or self.covariance_weight < 0:
+            raise ValueError("covariance_weight must be finite and nonnegative.")
+
+    def forward(self, input, target, embeddings):
+        """Return the scalar mean NLL plus weighted covariance penalty."""
+        if input.ndim != 2 or embeddings.ndim != 2 or input.size(0) != embeddings.size(0):
+            raise ValueError("input and embeddings must be matrices with matching batch sizes.")
+        nll = nn.functional.nll_loss(input, target)
+        penalty = (
+            class_covariance_penalty(embeddings, target, num_classes=input.size(1))
+            if self.covariance_weight != 0 else embeddings.sum() * 0.0
+        )
+        return nll + self.covariance_weight * penalty
