@@ -223,18 +223,23 @@ class SimplexQDAHead(nn.Module):
 
 class FisherSimplexLDAHead(nn.Module):
     """
-    Fixed-mean spherical LDA head trained with Fisher's discriminant criterion.
+    Fixed-mean LDA head trained with Fisher's discriminant criterion.
 
     Forward returns the negative Fisher ratio for a labeled batch. Use `logits`
     for evaluation-time class logits identical to SimplexLDAHead.
+    Covariance is learned spherical by default, or fixed to identity.
     """
 
-    def __init__(self, C, D, fisher_eps=1e-8, prior_strength=0.5):
+    def __init__(self, C, D, fisher_eps=1e-8, prior_strength=0.5, covariance_type="spherical"):
         super().__init__()
         if D < C - 1:
             raise ValueError(f"D must be at least C-1 to embed the simplex (got C={C}, D={D}).")
         if not (0.0 <= prior_strength <= 1.0):
             raise ValueError(f"prior_strength must be in [0,1] (got {prior_strength}).")
+        cov_type = str(covariance_type).lower()
+        if cov_type not in {"identity", "spherical"}:
+            raise ValueError("covariance_type must be 'identity' or 'spherical'.")
+        self.covariance_type = cov_type
         self.C = C
         self.D = D
         self.fisher_eps = fisher_eps
@@ -245,7 +250,8 @@ class FisherSimplexLDAHead(nn.Module):
         scale = 6.0 / pairwise_dist
         mu = mu * scale
         self.register_buffer('mu', mu)
-        self.log_cov = nn.Parameter(torch.zeros(1, dtype=dtype))
+        if self.covariance_type == "spherical":
+            self.log_cov = nn.Parameter(torch.zeros(1, dtype=dtype))
         self.prior_logits = nn.Parameter(torch.zeros(C, dtype=dtype))
 
     @staticmethod
@@ -263,6 +269,8 @@ class FisherSimplexLDAHead(nn.Module):
 
     @property
     def cov_diag(self):
+        if self.covariance_type == "identity":
+            return self.mu.new_ones(self.D)
         return torch.exp(self.log_cov).repeat(self.D)
 
     def logits(self, z):
@@ -270,9 +278,11 @@ class FisherSimplexLDAHead(nn.Module):
         mu = self.mu.to(z.dtype)
         diff = z.unsqueeze(1) - mu.unsqueeze(0)
         m2 = (diff * diff).sum(-1)
+        log_prior = torch.log_softmax(self.prior_logits, dim=0)
+        if self.covariance_type == "identity":
+            return log_prior.unsqueeze(0) - 0.5 * m2
         var = torch.exp(self.log_cov).to(z.dtype)
         log_det = self.D * self.log_cov.to(z.dtype)
-        log_prior = torch.log_softmax(self.prior_logits, dim=0)
         return log_prior.unsqueeze(0) - 0.5 * (m2 / var + log_det)
 
     def forward(self, z, y):
@@ -292,7 +302,8 @@ class FisherSimplexLDAHead(nn.Module):
         dtype = z.dtype
         device = z.device
         mu = self.mu.to(device=device, dtype=dtype)
-        var = torch.exp(self.log_cov.to(device=device, dtype=dtype))
+        var = (z.new_ones(()) if self.covariance_type == "identity"
+               else torch.exp(self.log_cov.to(device=device, dtype=dtype)))
 
         # Within-class scatter measured by Mahalanobis distance to fixed class means.
         diff = z - mu[y]

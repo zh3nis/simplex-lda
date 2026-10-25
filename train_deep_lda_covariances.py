@@ -156,15 +156,21 @@ def main():
     parser.add_argument("--runs", type=int, default=3, help="Number of runs per covariance type.")
     parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
     parser.add_argument("--test-batch-size", type=int, default=1024, help="Test batch size.")
+    parser.add_argument(
+        "--datasets", nargs="+", choices=["FashionMNIST", "CIFAR10", "CIFAR100"],
+        default=["FashionMNIST", "CIFAR10", "CIFAR100"],
+        help="Datasets to train (default: all three).",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     covariance_types = ["identity", "spherical", "diag", "full"]
     datasets_cfg = [
-        {"name": "FashionMNIST", "C": 10, "D": 9, "optimize_head": False},
+        {"name": "FashionMNIST", "C": 10, "D": 9, "optimize_head": True},
         {"name": "CIFAR10", "C": 10, "D": 9, "optimize_head": True},
         {"name": "CIFAR100", "C": 100, "D": 99, "optimize_head": True},
     ]
+    datasets_cfg = [cfg for cfg in datasets_cfg if cfg["name"] in args.datasets]
 
     results = {
         "meta": {

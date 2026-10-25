@@ -17,6 +17,9 @@ accuracy on image benchmarks.
   - `FisherSimplexLDAHead`: Fisher-criterion head that shares the same geometry and evaluation
     logits as `SimplexLDAHead`.
 - `FashionMNIST.ipynb`: Example notebook for training and visualization.
+- `CIFAR10_Embeddings.ipynb`: Train fixed identity-covariance Simplex LDA and Softmax
+  with matching encoders, then compare their CIFAR-10 test embeddings using PCA.
+  Saves `plots/cifar10_lda_vs_softmax_embeddings.png`.
 - `data/`, `plots/`: Supporting artifacts.
 
 ## Model summary
@@ -56,3 +59,16 @@ loss.backward()
 
 For Fisher-style training, use `FisherSimplexLDAHead` and call `forward(z, y)` to obtain the
 negative Fisher ratio; use `logits(z)` at evaluation time.
+Pass `covariance_type="identity"` to fix covariance to `I` without covariance parameters;
+the default remains learned spherical covariance.
+
+`train_deep_lda_fisher.py` runs the Fisher objective from `lda/CIFAR10_Fisher.ipynb`
+with identity covariance on FashionMNIST, CIFAR10, and CIFAR100. It reuses the encoder,
+data transforms, seeds, and prior optimization settings from `train_deep_lda_covariances.py`.
+Each epoch records Fisher loss and train/test accuracy. Results retain the same JSON
+layout, with only the `identity` covariance key.
+
+```bash
+cd simplex-lda
+python train_deep_lda_fisher.py --epochs 100 --runs 3 --output ./results/deep_lda_fisher.json
+```
