@@ -38,7 +38,7 @@ class DeepLDA(nn.Module):
     def __init__(self, C, D):
         super().__init__()
         self.encoder = ResNet50Encoder(D)
-        self.head = SimplexLDAHead(C, D)
+        self.head = SimplexLDAHead(C, D, covariance_type="identity")
 
     def forward(self, x):
         z = self.encoder(x)
