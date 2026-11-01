@@ -25,7 +25,9 @@ class TransformerLDA(nn.Module):
         self.encoder = AutoModel.from_pretrained(model_name)
         hidden = self.encoder.config.hidden_size
         self.proj = nn.Linear(hidden, num_labels - 1)
-        self.head = SimplexLDAHead(C=num_labels, D=num_labels - 1)
+        self.head = SimplexLDAHead(
+            C=num_labels, D=num_labels - 1, covariance_type="identity"
+        )
 
     def forward(self, **inputs):
         out = self.encoder(**inputs)
@@ -62,7 +64,7 @@ def evaluate_simplex(model, loader, device):
 
 
 def load_ag_news(tokenizer):
-    raw_ds = load_dataset("ag_news")
+    raw_ds = load_dataset("fancyzhx/ag_news")
 
     def tokenize(batch):
         return tokenizer(batch["text"], truncation=True)
@@ -74,7 +76,7 @@ def load_ag_news(tokenizer):
 
 
 def load_clinc150(tokenizer):
-    raw_ds = load_dataset("clinc_oos", "plus")
+    raw_ds = load_dataset("clinc/clinc_oos", "plus")
 
     def tokenize(batch):
         return tokenizer(batch["text"], truncation=True)
