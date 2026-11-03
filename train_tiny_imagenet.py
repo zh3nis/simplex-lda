@@ -10,6 +10,7 @@ import torch.nn as nn
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
+from torchvision.datasets.utils import download_and_extract_archive
 
 from lda import SimplexLDAHead
 
@@ -49,7 +50,7 @@ class DeepLDA(nn.Module):
     def __init__(self, C, D):
         super().__init__()
         self.encoder = Encoder(D)
-        self.head = SimplexLDAHead(C, D)
+        self.head = SimplexLDAHead(C, D, covariance_type="identity")
 
     def forward(self, x):
         z = self.encoder(x)
@@ -147,14 +148,25 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)
 
 
-def resolve_data_root(data_root):
-    root = Path(data_root)
+def resolve_data_root(data_root, download=False):
+    root = Path(data_root).expanduser().resolve()
     if (root / "train").exists() and (root / "val").exists():
         return root
     candidate = root / "tiny-imagenet-200"
     if (candidate / "train").exists() and (candidate / "val").exists():
         return candidate
-    raise FileNotFoundError(f"Tiny ImageNet directory not found under {data_root}")
+    if download:
+        download_dir = root.parent if root.name == "tiny-imagenet-200" else root
+        download_and_extract_archive(
+            "https://cs231n.stanford.edu/tiny-imagenet-200.zip",
+            download_root=str(download_dir),
+        )
+        return resolve_data_root(root)
+    raise FileNotFoundError(
+        f"Tiny ImageNet directory not found under {root}. "
+        "Run with --download to download and extract it, or set --data-root to "
+        "a directory containing wnids.txt, train/, and val/."
+    )
 
 
 def build_loaders(data_root, batch_size, test_batch_size, num_workers):
@@ -215,7 +227,12 @@ def train_model(model, loss_fn, train_ld, test_ld, device, epochs, tag):
 
 def main():
     parser = argparse.ArgumentParser(description="Train DeepLDA and Softmax on Tiny ImageNet.")
-    parser.add_argument("--data-root", default="./data/tiny-imagenet-200", help="Dataset root directory.")
+    parser.add_argument(
+        "--data-root",
+        default=str(Path(__file__).resolve().parent / "data" / "tiny-imagenet-200"),
+        help="Dataset root directory (default: data/tiny-imagenet-200 beside this script).",
+    )
+    parser.add_argument("--download", action="store_true", help="Download Tiny ImageNet if missing.")
     parser.add_argument("--output", default="./results/tiny_imagenet_deeplda.json", help="JSON output file.")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs.")
     parser.add_argument("--runs", type=int, default=3, help="Runs per head.")
@@ -224,7 +241,7 @@ def main():
     parser.add_argument("--num-workers", type=int, default=4, help="Data loader workers.")
     args = parser.parse_args()
 
-    data_root = resolve_data_root(args.data_root)
+    data_root = resolve_data_root(args.data_root, download=args.download)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_classes = 200
     embedding_dim = num_classes - 1

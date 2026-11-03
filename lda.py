@@ -8,10 +8,13 @@ class SimplexLDAHead(nn.Module):
 
     covariance_type="identity" fixes Sigma to I with no covariance parameters.
     The spherical, diag, and full options use trainable covariance parameters.
+    s sets the fixed pairwise distance between simplex means (default: 6).
     """
 
-    def __init__(self, C, D, covariance_type="spherical", min_scale=1e-4):
+    def __init__(self, C, D, covariance_type="spherical", min_scale=1e-4, s=6.0):
         super().__init__()
+        if not math.isfinite(s) or s <= 0:
+            raise ValueError("s must be finite and positive.")
         if D < C - 1:
             raise ValueError(f"D must be at least C-1 to embed the simplex (got C={C}, D={D}).")
         self.C = C
@@ -27,7 +30,7 @@ class SimplexLDAHead(nn.Module):
         dtype = torch.get_default_dtype()
         mu = self._regular_simplex_vertices(C, D, dtype=dtype)
         pairwise_dist = math.sqrt(2.0 * C / (C - 1))
-        scale = 6.0 / pairwise_dist
+        scale = s / pairwise_dist
         mu = mu * scale
         self.register_buffer('mu', mu)
         if self.covariance_type == "spherical":
