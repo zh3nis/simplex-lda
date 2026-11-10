@@ -135,3 +135,42 @@ standard deviations. Metadata records the architecture, dimensions, optimizer,
 ArcFace settings, and evaluation rule for reporting the experiment. Results are
 saved after every completed run. Summary statistics use the final epoch, with
 no selection of epochs or hyperparameters by test accuracy.
+
+## MM-LDA comparison
+
+`train_mm_lda.py` implements Max-Mahalanobis LDA from Pang, Du, and Zhu,
+ICML 2018 (`pang18a.pdf`), Section 3.2 and Algorithm 2. The fixed Gaussian
+means satisfy Eq. (4): their squared norms are `--mean-norm-squared`, and
+distinct means have inner product `-mean_norm_squared / (num_classes - 1)`.
+The construction is the closed form of Algorithm 1, with zero padding for
+larger embedding dimensions. Covariance is fixed to identity and class priors
+are fixed to uniform for these balanced benchmarks. Only the encoder is learned.
+
+Training minimizes cross entropy of the Gaussian posterior in Eq. (5), using
+logits `z @ mu.T - ||mu||^2 / 2 + log(prior)`. The shared `-||z||^2 / 2` cancels
+in the posterior. Features are not normalized. The loss is conditional cross
+entropy, rather than the baseline's joint Gaussian negative log-likelihood.
+Inference uses the same fixed classifier and takes the largest posterior.
+
+The default squared mean norm is 100, as selected in the paper's Section 4.2.
+This is distinct from class count, ArcFace's scale, and the existing Simplex
+LDA pairwise-distance setting: pairwise distance here is
+`sqrt(2 * num_classes * mean_norm_squared / (num_classes - 1))`.
+
+The encoder, transforms, dimensions (9/9/99), Adam settings, batch sizes,
+epochs, and run seeds match `train_arcface.py`. These are comparisons under
+the local CNN protocol; they do not reproduce the paper's ResNet-32 experiments,
+cross-validation, or adversarial evaluation.
+
+```bash
+cd simplex-lda
+python train_mm_lda.py --epochs 100 --runs 3 --output ./results/mm_lda.json
+python train_mm_lda.py --datasets CIFAR100 --mean-norm-squared 100 --output ./results/mm_lda_cifar100.json
+python -m unittest test_mm_lda
+```
+
+Results use `results[dataset]["mm_lda"]` with the same run and summary layout
+as ArcFace, including per-epoch cross-entropy loss, train/test accuracy, and
+final-epoch means and population standard deviations. Metadata records the
+fixed geometry, priors, covariance, optimizer, and encoder. The JSON is saved
+after every completed run.
