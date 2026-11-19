@@ -174,3 +174,57 @@ as ArcFace, including per-epoch cross-entropy loss, train/test accuracy, and
 final-epoch means and population standard deviations. Metadata records the
 fixed geometry, priors, covariance, optimizer, and encoder. The JSON is saved
 after every completed run.
+
+## PrototypeDL comparison
+
+`train_prototype_dl.py` implements the prototype network from Li et al.,
+*Deep Learning for Case-Based Reasoning through Prototypes: A Neural Network
+that Explains Its Predictions*, AAAI 2018 (`Li et al. (AAAI 2018).pdf`),
+Eqs. (1)-(7), checked against the authors' [PrototypeDL implementation](https://github.com/OscarcarLi/PrototypeDL).
+Learned latent prototypes produce squared Euclidean distances. A learned,
+bias-free linear layer maps these distances to class logits. Prototypes have
+no fixed class assignments, and classification uses all weighted distances.
+Prototypes and classifier weights are initialized uniformly in `[0, 1]`,
+as in the authors' code; the encoder output remains the baseline's linear
+projection with no additional sigmoid or feature normalization.
+
+All components are optimized jointly with
+`cross_entropy + lambda_reconstruction * R + lambda_1 * R1 + lambda_2 * R2`.
+`R` sums squared pixel errors per image and averages over the batch. `R1`
+averages each prototype's squared distance to its closest example in the
+current minibatch, as in the paper's approximation; `R2` averages each
+example's squared distance to its closest prototype. The three default
+weights are `0.05` (paper Section 3.2). The released code's weights
+`20, 1, 1, 1` give the same relative weighting, with a total loss 20 times larger.
+
+The script imports the exact encoder, loaders, evaluation, and seed helper from
+`train_deep_lda_covariances.py`. Dimensions remain 9/9/99 for
+FashionMNIST/CIFAR10/CIFAR100. Adam's default learning rate (`0.001`),
+100 epochs, three runs, batch sizes 256/1024, augmentations, and run seeds
+1338/1339/1340 match the local baseline. `--lr 0.0001` selects the paper's
+Section 3.2 learning rate. The default is 15 prototypes for each dataset,
+matching the paper's digit experiment; `--num-prototypes` can change this
+independently of class count (for example, 150 on CIFAR100).
+
+To decode the baseline's vector bottleneck, a linear expansion to a
+256-channel 7x7 or 8x8 map feeds convolutions and two transposed convolutions,
+ending in a sigmoid at 28x28 or 32x32. Reconstruction uses the same augmented
+image as the encoder, with CIFAR normalization reversed only for the target,
+so the loss is measured in `[0, 1]` pixel space. This is a comparison under the
+local CNN protocol, with an adapted decoder, rather than a reproduction of
+the paper's 40-dimensional MNIST autoencoder and elastic-deformation experiments.
+
+```bash
+cd simplex-lda
+python train_prototype_dl.py --epochs 100 --runs 3 --output ./results/prototype_dl.json
+python train_prototype_dl.py --datasets CIFAR100 --num-prototypes 150 --output ./results/prototype_dl_cifar100.json
+python -m unittest test_prototype_dl
+```
+
+Results use `results[dataset]["prototype_dl"]`, with each epoch's four
+unweighted loss components, weighted total loss, and train/test accuracy.
+Each run records its seed and final accuracies; `summary` reports final-epoch
+test means and population standard deviations. Metadata records the model,
+objective, and experiment settings. Results are saved after each completed
+run; as with the covariance baseline, this script saves metrics, not model
+checkpoints. No epoch or hyperparameter selection uses test accuracy.
