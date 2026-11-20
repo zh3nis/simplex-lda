@@ -6,12 +6,14 @@ import torch.nn as nn
 class SimplexLDAHead(nn.Module):
     """Fixed-mean LDA classifier with configurable covariance and trainable priors.
 
+    covariance_type="fixed" (default) fixes Sigma to I / D, where D is the
+    embedding dimension, with no trainable covariance parameters.
     covariance_type="identity" fixes Sigma to I with no covariance parameters.
     The spherical, diag, and full options use trainable covariance parameters.
     s sets the fixed pairwise distance between simplex means (default: 6).
     """
 
-    def __init__(self, C, D, covariance_type="spherical", min_scale=1e-4, s=6.0):
+    def __init__(self, C, D, covariance_type="fixed", min_scale=1e-4, s=6.0):
         super().__init__()
         if not math.isfinite(s) or s <= 0:
             raise ValueError("s must be finite and positive.")
@@ -20,9 +22,9 @@ class SimplexLDAHead(nn.Module):
         self.C = C
         self.D = D
         cov_type = str(covariance_type).lower()
-        if cov_type not in {"identity", "spherical", "diag", "full"}:
+        if cov_type not in {"fixed", "identity", "spherical", "diag", "full"}:
             raise ValueError(
-                "covariance_type must be one of {'identity', 'spherical', 'diag', 'full'} "
+                "covariance_type must be one of {'fixed', 'identity', 'spherical', 'diag', 'full'} "
                 f"(got {covariance_type!r})."
             )
         self.covariance_type = cov_type
@@ -57,6 +59,8 @@ class SimplexLDAHead(nn.Module):
 
     @property
     def cov_diag(self):
+        if self.covariance_type == "fixed":
+            return self.mu.new_full((self.D,), 1.0 / self.D)
         if self.covariance_type == "identity":
             return self.mu.new_ones(self.D)
         if self.covariance_type == "spherical":
@@ -67,11 +71,13 @@ class SimplexLDAHead(nn.Module):
 
     @property
     def covariance(self):
-        """Return fixed identity covariance or learned full covariance Sigma = L L^T."""
+        """Return fixed covariance (I / D or I) or learned full Sigma = L L^T."""
+        if self.covariance_type == "fixed":
+            return torch.eye(self.D, dtype=self.mu.dtype, device=self.mu.device) / self.D
         if self.covariance_type == "identity":
             return torch.eye(self.D, dtype=self.mu.dtype, device=self.mu.device)
         if self.covariance_type != "full":
-            raise AttributeError("covariance is only defined for identity or full covariance.")
+            raise AttributeError("covariance is only defined for fixed, identity, or full covariance.")
         L = self._get_cholesky(self.raw_tril.dtype, self.raw_tril.device)
         return L @ L.transpose(-2, -1)
 
@@ -100,6 +106,12 @@ class SimplexLDAHead(nn.Module):
 
         mu = self.mu.to(z.dtype)
         diff = z.unsqueeze(1) - mu.unsqueeze(0)
+        if self.covariance_type == "fixed":
+            # Sigma^{-1} = D I and log det(Sigma) = -D log(D).
+            m2 = self.D * (diff * diff).sum(-1)
+            log_det = -self.D * math.log(self.D)
+            log_prior = torch.log_softmax(self.prior_logits, dim=0)
+            return log_prior.unsqueeze(0) - 0.5 * (m2 + log_det)
         if self.covariance_type == "identity":
             # Sigma^{-1} = I and log det(Sigma) = 0.
             m2 = (diff * diff).sum(-1)

@@ -12,11 +12,56 @@ accuracy on image benchmarks.
 ## What is in this directory
 
 - `lda.py`: PyTorch modules for the simplex-constrained LDA heads.
-  - `SimplexLDAHead`: log-likelihood head with fixed simplex means, spherical covariance, and
-    trainable class priors.
+  - `SimplexLDAHead`: log-likelihood head with fixed simplex means, fixed covariance
+    `I / D` by default, and trainable class priors (`D` is the embedding dimension).
   - `FisherSimplexLDAHead`: Fisher-criterion head that shares the same geometry and evaluation
     logits as `SimplexLDAHead`.
 - `FashionMNIST.ipynb`: Example notebook for training and visualization.
+- `CIFAR100_SIGReg.ipynb`: CIFAR-100 companion using class-wise `SIGRegNLLLoss`
+  with default fixed covariance `I / D` (`D=99`). Uses all 50,000 training
+  images, the reference CNN and augmentations, Adam, and a 100-epoch default.
+  Includes test NLL/ECE/accuracy and confidence/reliability plots, with no
+  holdout for post-hoc temperature fitting. Configure `SIGREG_WEIGHT`,
+  `SIGREG_NUM_SLICES`, and `SIGREG_NUM_POINTS` (defaults 1.0, 256, and 65).
+  Saves `plots/cifar100_sigregnll_confidence_hist.png` and
+  `plots/cifar100_sigregnll_reliability_diagram.png`.
+- `FashionMNIST_SIGReg.ipynb`: Fashion-MNIST companion using `SIGRegNLLLoss`
+  from `sigreg.py` instead of NLL. Uses `SimplexLDAHead(C, D)` with its default
+  fixed covariance `I / D`: `I_9 / 9` for the nine-dimensional embeddings
+  (variance `1/9`, standard deviation `1/3`). Adam trains only the encoder
+  with the 100-epoch default; simplex means stay fixed and class priors remain
+  uniform. SIGReg tests `(z - mu_c) / sigma` against `N(0, I_9)` using the same
+  fixed scale as NLL. Includes PCA and confidence/reliability plots.
+  Uses all 60,000 training examples, with no calibration holdout or
+  temperature scaling; reports predictive NLL/ECE and accuracy on the test set.
+  Configure `SIGREG_WEIGHT` (default 1.0; zero recovers NLL),
+  `SIGREG_NUM_SLICES` (256), and `SIGREG_SEED` (1729) in setup.
+  Saves figures with `sigregnll` filenames under `plots/`.
+- `Synthetic_SIGReg.ipynb`: Companion to `Synthetic.ipynb` comparing NLL,
+  class-wise covariance matching, and LeJEPA's SIGReg Gaussianity regularizer.
+  Uses the same data, encoder, initialization,
+  batch order, and epochs 1/5/10/100. `sigreg.py` adapts Algorithm 1 in
+  `LeJEPA.pdf` to each class's residuals around its fixed simplex center,
+  targeting `N(mu_c, I / D)` using the head's default fixed covariance for all
+  three runs (`D=2`, so `Sigma=0.5 I_2`), 256 resampled directions, and 65 training integration
+  points on `[-5, 5]` (129 for diagnostics). The finer grids reduce the
+  translation aliasing of the paper's 17-point grid at small fixed variance.
+  SIGReg uses 5 NLL-only warm-up epochs followed by a 5-epoch linear ramp;
+  the NLL and covariance baselines keep their original schedules. The loss
+  is generative NLL plus the scheduled `gaussianity_weight`
+  times the frequency-weighted class EP statistics (including their `n_c`
+  multiplier). Default weight is 1.0; zero recovers NLL. Finite regularization
+  encourages Gaussianity rather than guaranteeing it. Overlapping input
+  classes also limit an exact match to almost disjoint output Gaussians.
+  Covariance matching and
+  SIGReg standardize using the variance from `head.cov_diag`; reference circles,
+  Gaussian samples, and held-out diagnostics use the same fixed covariance.
+  Includes held-out
+  characteristic-function diagnostics, a sampled Gaussian reference, Q–Q
+  plots, and training curves. Saves `plots/synth_*sigreg*.png` and
+  `results/synthetic_sigreg/metrics.json`. Run from this directory with
+  PyTorch, NumPy, and Matplotlib; check the regularizer with
+  `python -m unittest test_sigreg`.
 - `TinyImageNet.ipynb`: Tiny ImageNet counterpart to `CIFAR100.ipynb`, with
   identity-covariance Simplex LDA, held-out temperature calibration, and validation
   confidence/reliability plots. Uses the dataset loaders in `train_tiny_imagenet.py`.
@@ -26,14 +71,23 @@ accuracy on image benchmarks.
 - `CIFAR10_Embeddings.ipynb`: Train fixed identity-covariance Simplex LDA and Softmax
   with matching encoders, then compare their CIFAR-10 test embeddings using PCA.
   Saves `plots/cifar10_lda_vs_softmax_embeddings.png`.
+- `CIFAR10_Embeddings_SIGReg.ipynb`: Same CIFAR-10 embedding comparison, replacing
+  the LDA model's NLL with `SIGRegNLLLoss` from `sigreg.py` (generative NLL plus
+  class-wise SIGReg toward `N(mu_c, I_9)`). Keeps the Softmax cross-entropy
+  baseline, matching encoder initialization, augmentations, and 100-epoch
+  defaults. Configure `SIGREG_WEIGHT` (default 1.0; zero recovers NLL),
+  `SIGREG_NUM_SLICES` (256), and `SIGREG_SEED` (1729) in the setup cell.
+  Saves `plots/cifar10_sigregnll_vs_softmax_embeddings.png`.
 - `data/`, `plots/`: Supporting artifacts.
 
 ## Model summary
 
 Given an encoder `z = f_psi(x)` with output dimension `D`, the head fixes `C` class means to a
 regular simplex in `R^(C-1)` (optionally zero-padded if `D > C-1`) and uses a spherical covariance
-`Sigma = sigma^2 I`. The head learns only the class priors and the variance, while the encoder is
-trained end-to-end by maximum likelihood.
+`Sigma = I / D` by default (`covariance_type="fixed"`). There are no trainable
+covariance parameters in this mode: the head learns class priors, while the encoder
+is trained end-to-end by maximum likelihood. The default variance is `1 / D`, so
+the standard deviation is `1 / sqrt(D)` and the covariance has trace one.
 
 Key constraints:
 - `D >= C - 1` to embed the simplex.
@@ -54,7 +108,7 @@ encoder = nn.Sequential(
     nn.ReLU(),
     nn.Linear(128, D),
 )
-head = SimplexLDAHead(C=C, D=D)
+head = SimplexLDAHead(C=C, D=D)  # Fixed covariance I / D.
 
 x = torch.randn(32, 1, 28, 28)
 z = encoder(x)
@@ -66,7 +120,11 @@ loss.backward()
 For Fisher-style training, use `FisherSimplexLDAHead` and call `forward(z, y)` to obtain the
 negative Fisher ratio; use `logits(z)` at evaluation time.
 Pass `covariance_type="identity"` to fix covariance to `I` without covariance parameters;
-the default remains learned spherical covariance.
+`covariance_type="fixed"` (the `SimplexLDAHead` default) fixes it to `I / D`.
+Use `covariance_type="spherical"` for a trainable shared variance or when loading
+an existing learned-spherical checkpoint. The trainable `diag` and `full` modes
+also remain available. Fisher and QDA heads retain their own existing defaults.
+Check the LDA default with `python -m unittest test_lda_default`.
 
 `train_deep_lda_fisher.py` runs the Fisher objective from `lda/CIFAR10_Fisher.ipynb`
 with identity covariance on FashionMNIST, CIFAR10, and CIFAR100. It reuses the encoder,
